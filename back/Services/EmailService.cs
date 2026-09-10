@@ -63,7 +63,8 @@ namespace back.Services
 
                 if (!string.IsNullOrWhiteSpace(_settings.Username) && !string.IsNullOrWhiteSpace(_settings.Password))
                 {
-                    client.Credentials = new NetworkCredential(_settings.Username, _settings.Password);
+                    var cleanPassword = _settings.Password.Replace(" ", "").Trim();
+                    client.Credentials = new NetworkCredential(_settings.Username.Trim(), cleanPassword);
                 }
 
                 var senderAddress = !string.IsNullOrWhiteSpace(_settings.SenderEmail) ? _settings.SenderEmail : "no-reply@uteq.edu.ec";

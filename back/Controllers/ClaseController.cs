@@ -201,7 +201,7 @@ namespace back.Controllers
                 return BadRequest("No se proporcionaron datos de estudiantes a añadir.");
             }
 
-            var procesados = new List<object>();
+            var procesados = new List<EstudianteProcesadoItem>();
 
             foreach (var item in itemsToProcess)
             {
@@ -243,22 +243,32 @@ namespace back.Controllers
                     }
                 }
 
-                procesados.Add(new
+                procesados.Add(new EstudianteProcesadoItem
                 {
-                    user.Id,
-                    user.Username,
-                    Nombre = user.Persona?.Nombre ?? string.Empty,
-                    Apellido = user.Persona?.Apellido ?? string.Empty,
-                    Correo = user.Persona?.Correo ?? string.Empty,
-                    CredencialesEnviadas = isNewOrWithoutCreds
+                    id = user.Id,
+                    userId = user.Id,
+                    username = user.Username,
+                    nombre = user.Persona?.Nombre ?? string.Empty,
+                    apellido = user.Persona?.Apellido ?? string.Empty,
+                    correo = user.Persona?.Correo ?? string.Empty,
+                    credencialesEnviadas = isNewOrWithoutCreds,
+                    tempPassword = tempPassword,
+                    temporalPassword = tempPassword
                 });
             }
 
             await _context.SaveChangesAsync();
 
+            var firstWithCreds = procesados.FirstOrDefault(p => !string.IsNullOrEmpty(p.tempPassword));
+            var fallbackUser = procesados.FirstOrDefault();
+
             return Ok(new
             {
+                success = true,
                 message = "Estudiantes añadidos exitosamente a la clase.",
+                username = firstWithCreds?.username ?? fallbackUser?.username ?? string.Empty,
+                tempPassword = firstWithCreds?.tempPassword ?? fallbackUser?.tempPassword ?? string.Empty,
+                password = firstWithCreds?.tempPassword ?? fallbackUser?.tempPassword ?? string.Empty,
                 totalProcesados = procesados.Count,
                 estudiantes = procesados
             });
@@ -423,5 +433,66 @@ namespace back.Controllers
 
             return Ok(estudiantesDto);
         }
+
+        // Endpoint para desvincular estudiante de una clase (docente de la clase o administrador)
+        [HttpDelete("{claseId}/estudiantes/{estudianteId}")]
+        [HttpDelete("/api/Docente/clases/{claseId}/estudiantes/{estudianteId}")]
+        public async Task<IActionResult> RemoveEstudianteFromClase(int claseId, int estudianteId)
+        {
+            if (UserId == null) return Unauthorized();
+
+            var clase = await _context.Clases
+                .Include(c => c.Estudiantes)
+                .FirstOrDefaultAsync(c => c.Id == claseId);
+
+            if (clase == null) return NotFound(new { message = "Clase no encontrada." });
+
+            var userRol = User.FindFirst(ClaimTypes.Role)?.Value;
+            if (userRol != "Administrador" && !await IsDocenteOfClase(claseId))
+            {
+                return Forbid("Solo el docente de esta clase o un administrador puede desvincular estudiantes.");
+            }
+
+            var estudiante = clase.Estudiantes.FirstOrDefault(e => e.Id == estudianteId);
+            if (estudiante == null)
+            {
+                var persona = await _context.Personas.FirstOrDefaultAsync(p => p.Id == estudianteId);
+                if (persona != null)
+                {
+                    estudiante = clase.Estudiantes.FirstOrDefault(e => e.Id == persona.UserId);
+                }
+            }
+
+            if (estudiante == null)
+            {
+                return NotFound(new { message = "El estudiante no pertenece a esta clase." });
+            }
+
+            clase.Estudiantes.Remove(estudiante);
+
+            var inscripcion = await _context.Inscripciones
+                .FirstOrDefaultAsync(i => i.EstudianteId == estudiante.Id && i.CatedraId == clase.MateriaId);
+            if (inscripcion != null)
+            {
+                _context.Inscripciones.Remove(inscripcion);
+            }
+
+            await _context.SaveChangesAsync();
+
+            return Ok(new { success = true, message = "Estudiante desvinculado exitosamente de la clase." });
+        }
+    }
+
+    public class EstudianteProcesadoItem
+    {
+        public int id { get; set; }
+        public int userId { get; set; }
+        public string username { get; set; } = string.Empty;
+        public string nombre { get; set; } = string.Empty;
+        public string apellido { get; set; } = string.Empty;
+        public string correo { get; set; } = string.Empty;
+        public bool credencialesEnviadas { get; set; }
+        public string? tempPassword { get; set; }
+        public string? temporalPassword { get; set; }
     }
 }

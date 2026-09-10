@@ -24,6 +24,7 @@ namespace back.Data
         public DbSet<ClaseSesion> ClasesSesiones { get; set; }
         public DbSet<Asistencia> Asistencias { get; set; }
         public DbSet<Clase> Clases { get; set; }
+        public DbSet<Materia> Materias { get; set; }
         public DbSet<RecursoVistoPorEstudiante> RecursosVistosPorEstudiante { get; set; } // Añadido
 
         // Presentaciones y evaluaciones realizadas por jurados en las postulaciones

@@ -53,7 +53,7 @@ builder.Services.AddCors(); // Add CORS services
 
 var defaultConn = builder.Configuration.GetConnectionString("DefaultConnection");
 var useInMemory = (builder.Configuration["USE_INMEMORY"] ?? Environment.GetEnvironmentVariable("USE_INMEMORY")) == "true";
-if (string.IsNullOrEmpty(defaultConn) || useInMemory)
+if (string.IsNullOrWhiteSpace(defaultConn) || useInMemory)
 {
     // Use in-memory DB for local testing if no connection string is configured or USE_INMEMORY=true
     builder.Services.AddDbContext<AppDbContext>(options =>
@@ -61,11 +61,16 @@ if (string.IsNullOrEmpty(defaultConn) || useInMemory)
 }
 else
 {
+    // Persistencia formal relacional en PostgreSQL
     builder.Services.AddDbContext<AppDbContext>(options =>
         options.UseNpgsql(defaultConn));
 }
 
 builder.Services.AddScoped<ITokenService, TokenService>();
+
+// Configuración del servicio de correo SMTP
+builder.Services.Configure<SmtpSettings>(builder.Configuration.GetSection("SmtpSettings"));
+builder.Services.AddScoped<IEmailService, EmailService>();
 
 // Configure JWT authentication. Read TokenKey from configuration or environment and fail fast with a clear error
 var tokenKey = builder.Configuration["TokenKey"] ?? Environment.GetEnvironmentVariable("TOKEN_KEY");
@@ -111,5 +116,8 @@ app.UseAuthorization();
 
 app.MapControllers();
 app.MapGet("/", () => Results.Redirect("/index.html"));
+
+// Carga Inicial de Datos (Data Seeding)
+await DbInitializer.InitializeAsync(app.Services);
 
 app.Run();

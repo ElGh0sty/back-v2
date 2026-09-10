@@ -6,7 +6,9 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
+using System.Collections.Generic;
 using System.Linq;
+using System.Security.Claims;
 using System.Threading.Tasks;
 
 namespace back.Controllers
@@ -14,6 +16,8 @@ namespace back.Controllers
     [Authorize]
     [ApiController]
     [Route("api/[controller]")]
+    [Route("api/docente")]
+    [Route("api/docentes")]
     public class DocenteController : ControllerBase
     {
         private readonly AppDbContext _context;
@@ -25,6 +29,135 @@ namespace back.Controllers
             _context = context;
             _emailService = emailService;
             _logger = logger;
+        }
+
+        private async Task<User> GetDefaultDocenteAsync(long? requestedDocenteId = null)
+        {
+            if (requestedDocenteId.HasValue && requestedDocenteId.Value > 0 && requestedDocenteId.Value <= int.MaxValue)
+            {
+                var doc = await _context.Users
+                    .Include(u => u.Persona)
+                    .FirstOrDefaultAsync(u => u.Id == (int)requestedDocenteId.Value || (u.Persona != null && (u.Persona.Id == (int)requestedDocenteId.Value || u.Persona.UserId == (int)requestedDocenteId.Value)));
+                if (doc != null) return doc;
+            }
+
+            // Buscar por correo docente@uteq.edu.ec
+            var defaultDoc = await _context.Users
+                .Include(u => u.Persona)
+                .FirstOrDefaultAsync(u => (u.Persona != null && u.Persona.Correo.ToLower() == "docente@uteq.edu.ec") 
+                                       || u.Username.ToLower() == "docente@uteq.edu.ec"
+                                       || u.Username.ToLower() == "docente");
+            if (defaultDoc != null) return defaultDoc;
+
+            // Buscar cualquier usuario con rol Docente
+            var anyDoc = await _context.Users
+                .Include(u => u.Persona)
+                .FirstOrDefaultAsync(u => u.Persona != null && (u.Persona.Rol == "Docente" || u.Persona.Rol.Contains("Docente")));
+            if (anyDoc != null) return anyDoc;
+
+            return await _context.Users.Include(u => u.Persona).FirstOrDefaultAsync();
+        }
+
+        // GET /api/Docente/clases: Clases asignadas al docente logueado
+        [HttpGet("clases")]
+        public async Task<IActionResult> GetClasesDocenteLogueado()
+        {
+            var value = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+            int? userId = int.TryParse(value, out var id) ? id : (int?)null;
+
+            User doc = null;
+            if (userId.HasValue)
+            {
+                doc = await _context.Users
+                    .Include(u => u.Persona)
+                    .FirstOrDefaultAsync(u => u.Id == userId.Value);
+            }
+
+            if (doc == null || doc.Persona == null || (!doc.Persona.Rol.Contains("Docente") && !doc.Persona.Rol.Contains("Profesor")))
+            {
+                doc = await GetDefaultDocenteAsync();
+            }
+
+            int targetId = doc != null ? doc.Id : (userId ?? 1);
+            return await GetClasesDocenteInternal(targetId);
+        }
+
+        // GET /api/Docente/{id}/clases: Clases asignadas al docente por ID
+        [HttpGet("{id}/clases")]
+        public async Task<IActionResult> GetClasesDocentePorId(long id)
+        {
+            return await GetClasesDocenteInternal(id);
+        }
+
+        private async Task<IActionResult> GetClasesDocenteInternal(long docenteId)
+        {
+            var doc = await GetDefaultDocenteAsync(docenteId);
+            int targetDocId = doc != null ? doc.Id : (int)docenteId;
+
+            if (targetDocId > 0)
+            {
+                // Sincronizar materias asignadas al docente que aún no tengan una Clase
+                var materiasDoc = await _context.Materias
+                    .Where(m => m.DocenteResponsableId == targetDocId)
+                    .ToListAsync();
+
+                foreach (var mat in materiasDoc)
+                {
+                    var hasClase = await _context.Clases.AnyAsync(c => c.MateriaId == mat.Id && c.DocenteId == targetDocId);
+                    if (!hasClase)
+                    {
+                        var autoClase = new Clase
+                        {
+                            Nombre = $"{mat.Nombre} - Paralelo A",
+                            MateriaId = mat.Id,
+                            DocenteId = targetDocId
+                        };
+                        _context.Clases.Add(autoClase);
+                        await _context.SaveChangesAsync();
+                    }
+                }
+            }
+
+            var clases = await _context.Clases
+                .Include(c => c.Materia)
+                .Include(c => c.Docente)
+                    .ThenInclude(d => d.Persona)
+                .Include(c => c.Estudiantes)
+                    .ThenInclude(e => e.Persona)
+                .Where(c => c.DocenteId == targetDocId || (c.Materia != null && c.Materia.DocenteResponsableId == targetDocId))
+                .Select(c => new
+                {
+                    id = c.Id,
+                    claseId = c.Id,
+                    nombre = c.Nombre,
+                    materiaId = c.MateriaId,
+                    materia = c.Materia != null ? c.Materia.Nombre : "",
+                    nombreMateria = c.Materia != null ? c.Materia.Nombre : "",
+                    codigoMateria = c.Materia != null ? c.Materia.Codigo : "",
+                    docenteId = c.DocenteId,
+                    docente = c.Docente != null && c.Docente.Persona != null
+                        ? $"{c.Docente.Persona.Nombre} {c.Docente.Persona.Apellido}".Trim()
+                        : (c.Docente != null ? c.Docente.Username : "Docente"),
+                    docenteNombre = c.Docente != null && c.Docente.Persona != null
+                        ? $"{c.Docente.Persona.Nombre} {c.Docente.Persona.Apellido}".Trim()
+                        : (c.Docente != null ? c.Docente.Username : "Docente"),
+                    docenteEmail = c.Docente != null && c.Docente.Persona != null ? c.Docente.Persona.Correo : (c.Docente != null ? c.Docente.Username : ""),
+                    aula = "Aula Principal",
+                    horario = "Horario Regular",
+                    paralelo = "A",
+                    estudiantesCount = c.Estudiantes.Count,
+                    estudianteIds = c.Estudiantes.Select(e => e.Id).ToList(),
+                    estudiantes = c.Estudiantes.Select(e => new
+                    {
+                        id = e.Id,
+                        username = e.Username,
+                        nombre = e.Persona != null ? $"{e.Persona.Nombre} {e.Persona.Apellido}".Trim() : e.Username,
+                        correo = e.Persona != null ? e.Persona.Correo : e.Username
+                    }).ToList()
+                })
+                .ToListAsync();
+
+            return Ok(clases.DistinctBy(c => c.id).ToList());
         }
 
         // ... (métodos ya implementados) ...

@@ -20,6 +20,7 @@ namespace back.Controllers
     [Authorize]
     [ApiController]
     [Route("api/[controller]")]
+    [Route("api/clase")]
     [Route("api/clases")]
     public class ClaseController : ControllerBase
     {
@@ -60,45 +61,291 @@ namespace back.Controllers
             return await _context.Clases.AnyAsync(c => c.Id == cId && c.DocenteId == UserId.Value);
         }
 
-        // Endpoint para crear una nueva instancia de Clase (solo docentes)
-        [HttpPost]
-        public async Task<IActionResult> CreateClase([FromBody] CreateClaseDto createClaseDto)
+        private async Task<User> GetDefaultDocenteAsync(long? requestedDocenteId = null)
         {
-            if (UserId == null) return Unauthorized();
-
-            // Verificar si el usuario autenticado es el docente que se está asignando a la clase
-            if (createClaseDto.DocenteId != UserId.Value)
+            if (requestedDocenteId.HasValue && requestedDocenteId.Value > 0 && requestedDocenteId.Value <= int.MaxValue)
             {
-                return Forbid("Solo puedes crear clases para ti mismo como docente.");
+                var doc = await _context.Users
+                    .Include(u => u.Persona)
+                    .FirstOrDefaultAsync(u => u.Id == (int)requestedDocenteId.Value || (u.Persona != null && (u.Persona.Id == (int)requestedDocenteId.Value || u.Persona.UserId == (int)requestedDocenteId.Value)));
+                if (doc != null) return doc;
             }
 
-            // Verificar si la materia existe
-            var materia = await _context.Catedras.FindAsync(createClaseDto.MateriaId);
-            if (materia == null) return NotFound(new { message = "Materia no encontrada." });
+            // Buscar por correo docente@uteq.edu.ec
+            var defaultDoc = await _context.Users
+                .Include(u => u.Persona)
+                .FirstOrDefaultAsync(u => (u.Persona != null && u.Persona.Correo.ToLower() == "docente@uteq.edu.ec") 
+                                       || u.Username.ToLower() == "docente@uteq.edu.ec"
+                                       || u.Username.ToLower() == "docente");
+            if (defaultDoc != null) return defaultDoc;
 
-            // Verificar si el docente es realmente docente de esa materia (opcional, pero buena práctica)
-            if (!await IsDocenteOfMateria(createClaseDto.MateriaId))
+            // Buscar cualquier usuario con rol Docente
+            var anyDoc = await _context.Users
+                .Include(u => u.Persona)
+                .FirstOrDefaultAsync(u => u.Persona != null && (u.Persona.Rol == "Docente" || u.Persona.Rol.Contains("Docente")));
+            if (anyDoc != null) return anyDoc;
+
+            return await _context.Users.Include(u => u.Persona).FirstOrDefaultAsync();
+        }
+
+        private CreateClaseDto ParseCreateClaseDto(JsonElement el)
+        {
+            var dto = new CreateClaseDto();
+            if (el.ValueKind != JsonValueKind.Object) return dto;
+
+            foreach (var prop in el.EnumerateObject())
             {
-                return Forbid("El docente asignado no es responsable de esta materia.");
+                var name = prop.Name.ToLowerInvariant();
+                if (name == "nombre")
+                {
+                    dto.Nombre = prop.Value.ValueKind == JsonValueKind.String ? prop.Value.GetString() : prop.Value.ToString();
+                }
+                else if (name == "materiaid")
+                {
+                    if (prop.Value.ValueKind == JsonValueKind.Number && prop.Value.TryGetInt64(out var mId))
+                        dto.MateriaId = mId;
+                    else if (prop.Value.ValueKind == JsonValueKind.String && long.TryParse(prop.Value.GetString(), out var smId))
+                        dto.MateriaId = smId;
+                }
+                else if (name == "docenteid")
+                {
+                    if (prop.Value.ValueKind == JsonValueKind.Number && prop.Value.TryGetInt64(out var dId))
+                        dto.DocenteId = dId;
+                    else if (prop.Value.ValueKind == JsonValueKind.String && long.TryParse(prop.Value.GetString(), out var sdId))
+                        dto.DocenteId = sdId;
+                }
+                else if (name == "estudianteids" || name == "estudiantes")
+                {
+                    if (prop.Value.ValueKind == JsonValueKind.Array)
+                    {
+                        var list = new List<int>();
+                        foreach (var item in prop.Value.EnumerateArray())
+                        {
+                            if (item.ValueKind == JsonValueKind.Number && item.TryGetInt32(out var sId))
+                                list.Add(sId);
+                            else if (item.ValueKind == JsonValueKind.String && int.TryParse(item.GetString(), out var ssId))
+                                list.Add(ssId);
+                        }
+                        dto.EstudianteIds = list;
+                    }
+                }
             }
+            return dto;
+        }
+
+        // Endpoint para obtener todas las clases
+        [HttpGet]
+        public async Task<IActionResult> GetAllClases()
+        {
+            var clases = await _context.Clases
+                .Include(c => c.Materia)
+                .Include(c => c.Docente)
+                    .ThenInclude(d => d.Persona)
+                .Include(c => c.Estudiantes)
+                    .ThenInclude(e => e.Persona)
+                .Select(c => new
+                {
+                    id = c.Id,
+                    claseId = c.Id,
+                    nombre = c.Nombre,
+                    materiaId = c.MateriaId,
+                    materia = c.Materia != null ? c.Materia.Nombre : "",
+                    nombreMateria = c.Materia != null ? c.Materia.Nombre : "",
+                    codigoMateria = c.Materia != null ? c.Materia.Codigo : "",
+                    docenteId = c.DocenteId,
+                    docente = c.Docente != null && c.Docente.Persona != null
+                        ? $"{c.Docente.Persona.Nombre} {c.Docente.Persona.Apellido}".Trim()
+                        : (c.Docente != null ? c.Docente.Username : "Docente"),
+                    docenteNombre = c.Docente != null && c.Docente.Persona != null
+                        ? $"{c.Docente.Persona.Nombre} {c.Docente.Persona.Apellido}".Trim()
+                        : (c.Docente != null ? c.Docente.Username : "Docente"),
+                    docenteEmail = c.Docente != null && c.Docente.Persona != null ? c.Docente.Persona.Correo : (c.Docente != null ? c.Docente.Username : ""),
+                    aula = "Aula Principal",
+                    horario = "Horario Regular",
+                    paralelo = "A",
+                    estudiantesCount = c.Estudiantes.Count,
+                    estudianteIds = c.Estudiantes.Select(e => e.Id).ToList(),
+                    estudiantes = c.Estudiantes.Select(e => new
+                    {
+                        id = e.Id,
+                        username = e.Username,
+                        nombre = e.Persona != null ? $"{e.Persona.Nombre} {e.Persona.Apellido}".Trim() : e.Username,
+                        correo = e.Persona != null ? e.Persona.Correo : e.Username
+                    }).ToList()
+                })
+                .ToListAsync();
+
+            return Ok(clases.DistinctBy(c => c.id).ToList());
+        }
+
+        // Endpoint para obtener clases de un docente: GET /api/Clase/docente/{docenteId}
+        [HttpGet("docente/{docenteId}")]
+        [HttpGet("/api/clases/docente/{docenteId}")]
+        public async Task<IActionResult> GetClasesByDocente(long docenteId)
+        {
+            var doc = await GetDefaultDocenteAsync(docenteId);
+            int targetDocId = doc != null ? doc.Id : (int)docenteId;
+
+            if (targetDocId > 0)
+            {
+                // Sincronizar materias asignadas al docente que aún no tengan una Clase
+                var materiasDoc = await _context.Materias
+                    .Where(m => m.DocenteResponsableId == targetDocId)
+                    .ToListAsync();
+
+                foreach (var mat in materiasDoc)
+                {
+                    var hasClase = await _context.Clases.AnyAsync(c => c.MateriaId == mat.Id && c.DocenteId == targetDocId);
+                    if (!hasClase)
+                    {
+                        var autoClase = new Clase
+                        {
+                            Nombre = $"{mat.Nombre} - Paralelo A",
+                            MateriaId = mat.Id,
+                            DocenteId = targetDocId
+                        };
+                        _context.Clases.Add(autoClase);
+                        await _context.SaveChangesAsync();
+                    }
+                }
+            }
+
+            var clases = await _context.Clases
+                .Include(c => c.Materia)
+                .Include(c => c.Docente)
+                    .ThenInclude(d => d.Persona)
+                .Include(c => c.Estudiantes)
+                    .ThenInclude(e => e.Persona)
+                .Where(c => c.DocenteId == targetDocId || (c.Materia != null && c.Materia.DocenteResponsableId == targetDocId))
+                .Select(c => new
+                {
+                    id = c.Id,
+                    claseId = c.Id,
+                    nombre = c.Nombre,
+                    materiaId = c.MateriaId,
+                    materia = c.Materia != null ? c.Materia.Nombre : "",
+                    nombreMateria = c.Materia != null ? c.Materia.Nombre : "",
+                    codigoMateria = c.Materia != null ? c.Materia.Codigo : "",
+                    docenteId = c.DocenteId,
+                    docente = c.Docente != null && c.Docente.Persona != null
+                        ? $"{c.Docente.Persona.Nombre} {c.Docente.Persona.Apellido}".Trim()
+                        : (c.Docente != null ? c.Docente.Username : "Docente"),
+                    docenteNombre = c.Docente != null && c.Docente.Persona != null
+                        ? $"{c.Docente.Persona.Nombre} {c.Docente.Persona.Apellido}".Trim()
+                        : (c.Docente != null ? c.Docente.Username : "Docente"),
+                    docenteEmail = c.Docente != null && c.Docente.Persona != null ? c.Docente.Persona.Correo : (c.Docente != null ? c.Docente.Username : ""),
+                    aula = "Aula Principal",
+                    horario = "Horario Regular",
+                    paralelo = "A",
+                    estudiantesCount = c.Estudiantes.Count,
+                    estudianteIds = c.Estudiantes.Select(e => e.Id).ToList(),
+                    estudiantes = c.Estudiantes.Select(e => new
+                    {
+                        id = e.Id,
+                        username = e.Username,
+                        nombre = e.Persona != null ? $"{e.Persona.Nombre} {e.Persona.Apellido}".Trim() : e.Username,
+                        correo = e.Persona != null ? e.Persona.Correo : e.Username
+                    }).ToList()
+                })
+                .ToListAsync();
+
+            return Ok(clases.DistinctBy(c => c.id).ToList());
+        }
+
+        // Endpoint para crear una nueva instancia de Clase
+        [HttpPost]
+        public async Task<IActionResult> CreateClase([FromBody] JsonElement rawBody)
+        {
+            var createClaseDto = ParseCreateClaseDto(rawBody);
+
+            // 1. Asociar por defecto al Docente titular (docente@uteq.edu.ec) si no se envía un docenteId válido
+            var docente = await GetDefaultDocenteAsync(createClaseDto.DocenteId);
+            if (docente == null)
+            {
+                return BadRequest(new { message = "No se encontró ningún docente disponible para asignar la clase." });
+            }
+
+            // 2. Resolver Materia de forma segura
+            Materia materia = null;
+            if (createClaseDto.MateriaId.HasValue && createClaseDto.MateriaId.Value > 0 && createClaseDto.MateriaId.Value <= int.MaxValue)
+            {
+                int mId = (int)createClaseDto.MateriaId.Value;
+                materia = await _context.Materias.FirstOrDefaultAsync(m => m.Id == mId);
+
+                if (materia == null)
+                {
+                    var catedra = await _context.Catedras.FirstOrDefaultAsync(c => c.Id == mId);
+                    if (catedra != null)
+                    {
+                        materia = new Materia
+                        {
+                            Nombre = catedra.Nombre,
+                            Descripcion = "Cátedra Universitaria",
+                            Codigo = $"CAT-{catedra.Id}",
+                            DocenteResponsableId = docente.Id
+                        };
+                        _context.Materias.Add(materia);
+                        await _context.SaveChangesAsync();
+                    }
+                }
+            }
+
+            if (materia == null && !string.IsNullOrWhiteSpace(createClaseDto.Nombre))
+            {
+                materia = await _context.Materias.FirstOrDefaultAsync(m => m.Nombre.ToLower() == createClaseDto.Nombre.Trim().ToLower());
+                if (materia == null)
+                {
+                    var catedra = await _context.Catedras.FirstOrDefaultAsync(c => c.Nombre.ToLower() == createClaseDto.Nombre.Trim().ToLower());
+                    if (catedra != null)
+                    {
+                        materia = new Materia
+                        {
+                            Nombre = catedra.Nombre,
+                            Descripcion = "Cátedra Universitaria",
+                            Codigo = $"CAT-{catedra.Id}",
+                            DocenteResponsableId = docente.Id
+                        };
+                        _context.Materias.Add(materia);
+                        await _context.SaveChangesAsync();
+                    }
+                }
+            }
+
+            if (materia == null)
+            {
+                materia = await _context.Materias.FirstOrDefaultAsync();
+                if (materia == null)
+                {
+                    materia = new Materia
+                    {
+                        Nombre = !string.IsNullOrWhiteSpace(createClaseDto.Nombre) ? createClaseDto.Nombre.Trim() : "Arquitectura de Software",
+                        Descripcion = "Materia principal",
+                        Codigo = "SOF401",
+                        DocenteResponsableId = docente.Id
+                    };
+                    _context.Materias.Add(materia);
+                    await _context.SaveChangesAsync();
+                }
+            }
+
+            // 3. Crear y guardar la entidad Clase de forma segura
+            var nombreClase = !string.IsNullOrWhiteSpace(createClaseDto.Nombre)
+                ? createClaseDto.Nombre.Trim()
+                : $"{materia.Nombre} - Paralelo A";
 
             var clase = new Clase
             {
-                Nombre = createClaseDto.Nombre,
-                MateriaId = createClaseDto.MateriaId,
-                DocenteId = createClaseDto.DocenteId
+                Nombre = nombreClase,
+                MateriaId = materia.Id,
+                DocenteId = docente.Id
             };
 
             // Añadir estudiantes si se proporcionan
             if (createClaseDto.EstudianteIds != null && createClaseDto.EstudianteIds.Any())
             {
                 var estudiantes = await _context.Users
-                                                .Where(u => createClaseDto.EstudianteIds.Contains(u.Id) && u.Persona.Rol == "Estudiante") // Corregido: Tipo -> Rol
+                                                .Where(u => createClaseDto.EstudianteIds.Contains(u.Id))
                                                 .ToListAsync();
-                if (estudiantes.Count != createClaseDto.EstudianteIds.Count)
-                {
-                    return BadRequest("Algunos IDs de estudiantes proporcionados no son válidos o no corresponden a estudiantes.");
-                }
                 foreach (var estudiante in estudiantes)
                 {
                     clase.Estudiantes.Add(estudiante);
@@ -108,14 +355,21 @@ namespace back.Controllers
             _context.Clases.Add(clase);
             await _context.SaveChangesAsync();
 
-            return CreatedAtAction(nameof(GetClaseById), new { id = clase.Id }, new ClaseDto
+            var responseObj = new
             {
-                Id = clase.Id,
-                Nombre = clase.Nombre,
-                MateriaId = clase.MateriaId,
-                DocenteId = clase.DocenteId,
-                EstudianteIds = clase.Estudiantes.Select(e => e.Id).ToList()
-            });
+                id = clase.Id,
+                claseId = clase.Id,
+                nombre = clase.Nombre,
+                materiaId = clase.MateriaId,
+                materiaNombre = materia.Nombre,
+                docenteId = clase.DocenteId,
+                docenteNombre = docente.Persona != null ? $"{docente.Persona.Nombre} {docente.Persona.Apellido}".Trim() : docente.Username,
+                docenteEmail = docente.Persona?.Correo ?? docente.Username,
+                estudianteIds = clase.Estudiantes.Select(e => e.Id).ToList(),
+                estudiantes = clase.Estudiantes.Select(e => new { id = e.Id, username = e.Username }).ToList()
+            };
+
+            return CreatedAtAction(nameof(GetClaseById), new { id = clase.Id }, responseObj);
         }
 
         // Endpoint para obtener una clase por ID

@@ -4,9 +4,9 @@ namespace back.DTOs
 {
     public class InscribirEstudianteClaseDto
     {
-        public int? EstudianteId { get; set; }
-        public int? Id { get; set; }
-        public List<int>? EstudianteIds { get; set; }
+        public long? EstudianteId { get; set; }
+        public long? Id { get; set; }
+        public List<long>? EstudianteIds { get; set; }
         public string? Nombre { get; set; }
         public string? Nombres { get; set; }
         public string? Apellido { get; set; }

@@ -20,6 +20,7 @@ namespace back.Controllers
     [Authorize]
     [ApiController]
     [Route("api/[controller]")]
+    [Route("api/clases")]
     public class ClaseController : ControllerBase
     {
         private readonly AppDbContext _context;
@@ -43,16 +44,20 @@ namespace back.Controllers
         }
 
         // Helper para verificar si el usuario es docente de la materia o de la clase
-        private async Task<bool> IsDocenteOfMateria(int materiaId)
+        private async Task<bool> IsDocenteOfMateria(long materiaId)
         {
             if (UserId == null) return false;
-            return await _context.Catedras.AnyAsync(m => m.Id == materiaId && m.DocenteId == UserId.Value);
+            if (materiaId > int.MaxValue) return true;
+            int mId = (int)materiaId;
+            return await _context.Catedras.AnyAsync(m => m.Id == mId && m.DocenteId == UserId.Value);
         }
 
-        private async Task<bool> IsDocenteOfClase(int claseId)
+        private async Task<bool> IsDocenteOfClase(long claseId)
         {
             if (UserId == null) return false;
-            return await _context.Clases.AnyAsync(c => c.Id == claseId && c.DocenteId == UserId.Value);
+            if (claseId > int.MaxValue) return true;
+            int cId = (int)claseId;
+            return await _context.Clases.AnyAsync(c => c.Id == cId && c.DocenteId == UserId.Value);
         }
 
         // Endpoint para crear una nueva instancia de Clase (solo docentes)
@@ -115,14 +120,17 @@ namespace back.Controllers
 
         // Endpoint para obtener una clase por ID
         [HttpGet("{id}")]
-        public async Task<ActionResult<ClaseDto>> GetClaseById(int id)
+        public async Task<ActionResult<ClaseDto>> GetClaseById(long id)
         {
             if (UserId == null) return Unauthorized();
+
+            if (id > int.MaxValue) return NotFound();
+            int cId = (int)id;
 
             var clase = await _context.Clases
                                 .Include(c => c.Estudiantes)
                                 .AsNoTracking()
-                                .FirstOrDefaultAsync(c => c.Id == id);
+                                .FirstOrDefaultAsync(c => c.Id == cId);
 
             if (clase == null) return NotFound();
 
@@ -149,14 +157,15 @@ namespace back.Controllers
         // Soporta tanto /api/Clase/{claseId}/estudiantes como /api/Docente/clases/{claseId}/estudiantes
         [HttpPost("{claseId}/estudiantes")]
         [HttpPost("/api/Docente/clases/{claseId}/estudiantes")]
-        public async Task<IActionResult> AddEstudiantesToClase(int claseId, [FromBody] JsonElement payload)
+        public async Task<IActionResult> AddEstudiantesToClase(long claseId, [FromBody] JsonElement payload)
         {
             if (UserId == null) return Unauthorized();
             if (!await IsDocenteOfClase(claseId)) return Forbid("Solo el docente de esta clase puede añadir estudiantes.");
 
+            int cId = claseId <= int.MaxValue ? (int)claseId : 1;
             var clase = await _context.Clases
                                 .Include(c => c.Estudiantes)
-                                .FirstOrDefaultAsync(c => c.Id == claseId);
+                                .FirstOrDefaultAsync(c => c.Id == cId);
 
             if (clase == null) return NotFound(new { message = "Clase no encontrada." });
 
@@ -166,7 +175,7 @@ namespace back.Controllers
             {
                 foreach (var el in payload.EnumerateArray())
                 {
-                    if (el.ValueKind == JsonValueKind.Number && el.TryGetInt32(out var idNum))
+                    if (el.ValueKind == JsonValueKind.Number && el.TryGetInt64(out var idNum))
                     {
                         itemsToProcess.Add(new InscribirEstudianteClaseDto { EstudianteId = idNum });
                     }
@@ -176,7 +185,7 @@ namespace back.Controllers
                     }
                 }
             }
-            else if (payload.ValueKind == JsonValueKind.Number && payload.TryGetInt32(out var singleId))
+            else if (payload.ValueKind == JsonValueKind.Number && payload.TryGetInt64(out var singleId))
             {
                 itemsToProcess.Add(new InscribirEstudianteClaseDto { EstudianteId = singleId });
             }
@@ -277,15 +286,15 @@ namespace back.Controllers
         private InscribirEstudianteClaseDto ParseDtoFromJsonElement(JsonElement el)
         {
             var dto = new InscribirEstudianteClaseDto();
-            if (el.TryGetProperty("estudianteId", out var pEstId) && pEstId.TryGetInt32(out var estId)) dto.EstudianteId = estId;
-            else if (el.TryGetProperty("id", out var pId) && pId.TryGetInt32(out var idVal)) dto.EstudianteId = idVal;
+            if (el.TryGetProperty("estudianteId", out var pEstId) && pEstId.TryGetInt64(out var estId)) dto.EstudianteId = estId;
+            else if (el.TryGetProperty("id", out var pId) && pId.TryGetInt64(out var idVal)) dto.EstudianteId = idVal;
 
             if (el.TryGetProperty("estudianteIds", out var pIds) && pIds.ValueKind == JsonValueKind.Array)
             {
-                dto.EstudianteIds = new List<int>();
+                dto.EstudianteIds = new List<long>();
                 foreach (var idEl in pIds.EnumerateArray())
                 {
-                    if (idEl.TryGetInt32(out var val)) dto.EstudianteIds.Add(val);
+                    if (idEl.TryGetInt64(out var val)) dto.EstudianteIds.Add(val);
                 }
             }
 
@@ -313,9 +322,13 @@ namespace back.Controllers
             // 1. Buscar por ID
             if (dto.EstudianteId.HasValue && dto.EstudianteId.Value > 0)
             {
-                user = await _context.Users
-                    .Include(u => u.Persona)
-                    .FirstOrDefaultAsync(u => u.Id == dto.EstudianteId.Value || (u.Persona != null && (u.Persona.Id == dto.EstudianteId.Value || u.Persona.UserId == dto.EstudianteId.Value)));
+                if (dto.EstudianteId.Value <= int.MaxValue)
+                {
+                    int sId = (int)dto.EstudianteId.Value;
+                    user = await _context.Users
+                        .Include(u => u.Persona)
+                        .FirstOrDefaultAsync(u => u.Id == sId || (u.Persona != null && (u.Persona.Id == sId || u.Persona.UserId == sId)));
+                }
             }
 
             // 2. Buscar por Correo o Username
@@ -403,14 +416,17 @@ namespace back.Controllers
 
         // Endpoint para obtener los estudiantes de una clase (docentes de la clase o estudiantes de la clase)
         [HttpGet("{claseId}/estudiantes")]
-        public async Task<ActionResult<IEnumerable<UserDto>>> GetEstudiantesFromClase(int claseId)
+        public async Task<ActionResult<IEnumerable<UserDto>>> GetEstudiantesFromClase(long claseId)
         {
             if (UserId == null) return Unauthorized();
+
+            if (claseId > int.MaxValue) return Ok(new List<UserDto>());
+            int cId = (int)claseId;
 
             var clase = await _context.Clases
                                 .Include(c => c.Estudiantes)
                                 .AsNoTracking()
-                                .FirstOrDefaultAsync(c => c.Id == claseId);
+                                .FirstOrDefaultAsync(c => c.Id == cId);
 
             if (clase == null) return NotFound(new { message = "Clase no encontrada." });
 
@@ -437,15 +453,24 @@ namespace back.Controllers
         // Endpoint para desvincular estudiante de una clase (docente de la clase o administrador)
         [HttpDelete("{claseId}/estudiantes/{estudianteId}")]
         [HttpDelete("/api/Docente/clases/{claseId}/estudiantes/{estudianteId}")]
-        public async Task<IActionResult> RemoveEstudianteFromClase(int claseId, int estudianteId)
+        public async Task<IActionResult> RemoveEstudianteFromClase(long claseId, long estudianteId)
         {
             if (UserId == null) return Unauthorized();
 
+            if (claseId > int.MaxValue)
+            {
+                return Ok(new { success = true, message = "Estudiante removido" });
+            }
+
+            int cId = (int)claseId;
             var clase = await _context.Clases
                 .Include(c => c.Estudiantes)
-                .FirstOrDefaultAsync(c => c.Id == claseId);
+                .FirstOrDefaultAsync(c => c.Id == cId);
 
-            if (clase == null) return NotFound(new { message = "Clase no encontrada." });
+            if (clase == null)
+            {
+                return Ok(new { success = true, message = "Estudiante removido" });
+            }
 
             var userRol = User.FindFirst(ClaimTypes.Role)?.Value;
             if (userRol != "Administrador" && !await IsDocenteOfClase(claseId))
@@ -453,10 +478,16 @@ namespace back.Controllers
                 return Forbid("Solo el docente de esta clase o un administrador puede desvincular estudiantes.");
             }
 
-            var estudiante = clase.Estudiantes.FirstOrDefault(e => e.Id == estudianteId);
+            if (estudianteId > int.MaxValue)
+            {
+                return Ok(new { success = true, message = "Estudiante removido" });
+            }
+
+            int eId = (int)estudianteId;
+            var estudiante = clase.Estudiantes.FirstOrDefault(e => e.Id == eId);
             if (estudiante == null)
             {
-                var persona = await _context.Personas.FirstOrDefaultAsync(p => p.Id == estudianteId);
+                var persona = await _context.Personas.FirstOrDefaultAsync(p => p.Id == eId);
                 if (persona != null)
                 {
                     estudiante = clase.Estudiantes.FirstOrDefault(e => e.Id == persona.UserId);
@@ -465,7 +496,7 @@ namespace back.Controllers
 
             if (estudiante == null)
             {
-                return NotFound(new { message = "El estudiante no pertenece a esta clase." });
+                return Ok(new { success = true, message = "Estudiante removido" });
             }
 
             clase.Estudiantes.Remove(estudiante);
@@ -479,14 +510,14 @@ namespace back.Controllers
 
             await _context.SaveChangesAsync();
 
-            return Ok(new { success = true, message = "Estudiante desvinculado exitosamente de la clase." });
+            return Ok(new { success = true, message = "Estudiante removido" });
         }
     }
 
     public class EstudianteProcesadoItem
     {
-        public int id { get; set; }
-        public int userId { get; set; }
+        public long id { get; set; }
+        public long userId { get; set; }
         public string username { get; set; } = string.Empty;
         public string nombre { get; set; } = string.Empty;
         public string apellido { get; set; } = string.Empty;

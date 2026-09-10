@@ -84,9 +84,14 @@ namespace back.Services
                 _logger.LogInformation("Correo enviado exitosamente a {ToEmail} con asunto '{Subject}'.", toEmail, subject);
                 return true;
             }
+            catch (SmtpException smtpEx)
+            {
+                _logger.LogError(smtpEx, "Fallo de conexión o autenticación SMTP de Google ({Server}:{Port}) al enviar correo a {ToEmail}: {Message} [StatusCode: {StatusCode}]", _settings.Server, _settings.Port, toEmail, smtpEx.Message, smtpEx.StatusCode);
+                return false;
+            }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error al enviar correo electrónico SMTP a {ToEmail}.", toEmail);
+                _logger.LogError(ex, "Error al enviar correo electrónico SMTP a {ToEmail}: {Message}", toEmail, ex.Message);
                 return false;
             }
         }
@@ -160,9 +165,32 @@ namespace back.Services
             return await SendEmailAsync(toEmail, subject, htmlBody);
         }
 
-        public Task<bool> SendCredentialsAsync(string toEmail, string nombreCompleto, string username, string password, string rol)
+        public async Task<bool> SendCredentialsAsync(string toEmail, string nombreCompleto, string username, string password, string rol)
         {
-            return SendCredentialsEmailAsync(toEmail, nombreCompleto, username, password, rol);
+            try
+            {
+                _logger.LogInformation("Iniciando envío inmediato de credenciales a {ToEmail} (Usuario: {Username}) mediante servidor {Server}:{Port}...", toEmail, username, _settings.Server, _settings.Port);
+                var result = await SendCredentialsEmailAsync(toEmail, nombreCompleto, username, password, rol);
+                if (result)
+                {
+                    _logger.LogInformation("Credenciales de acceso entregadas correctamente a {ToEmail}.", toEmail);
+                }
+                else
+                {
+                    _logger.LogWarning("No se pudo completar el envío de credenciales a {ToEmail}.", toEmail);
+                }
+                return result;
+            }
+            catch (SmtpException smtpEx)
+            {
+                _logger.LogError(smtpEx, "Fallo SMTP de Google/Red en SendCredentialsAsync hacia {ToEmail}: {Message} (StatusCode: {StatusCode})", toEmail, smtpEx.Message, smtpEx.StatusCode);
+                return false;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Excepción no controlada en SendCredentialsAsync hacia {ToEmail}: {Message}", toEmail, ex.Message);
+                return false;
+            }
         }
 
         public async Task<bool> SendPasswordResetEmailAsync(string toEmail, string nombreCompleto, string resetTokenOrTemporaryPassword)

@@ -165,6 +165,7 @@ namespace back.Controllers
             int cId = claseId <= int.MaxValue ? (int)claseId : 1;
             var clase = await _context.Clases
                                 .Include(c => c.Estudiantes)
+                                .Include(c => c.Materia)
                                 .FirstOrDefaultAsync(c => c.Id == cId);
 
             if (clase == null) return NotFound(new { message = "Clase no encontrada." });
@@ -210,6 +211,14 @@ namespace back.Controllers
                 return BadRequest("No se proporcionaron datos de estudiantes a añadir.");
             }
 
+            // Nombre de la cátedra para las notificaciones por correo
+            string nombreCatedra = clase.Materia?.Nombre ?? clase.Nombre ?? "Cátedra Universitaria";
+            var catedra = await _context.Catedras.FirstOrDefaultAsync(c => c.Id == clase.MateriaId || c.Nombre == nombreCatedra);
+            if (catedra != null && !string.IsNullOrWhiteSpace(catedra.Nombre))
+            {
+                nombreCatedra = catedra.Nombre;
+            }
+
             var procesados = new List<EstudianteProcesadoItem>();
 
             foreach (var item in itemsToProcess)
@@ -217,35 +226,43 @@ namespace back.Controllers
                 var (user, isNewOrWithoutCreds, tempPassword) = await ResolveOrCreateEstudianteAsync(item);
                 if (user == null) continue;
 
-                // Verificar si el estudiante ya cuenta con una inscripción activa en esa clase
-                var yaEnClase = clase.Estudiantes.Any(e => e.Id == user.Id);
-                var yaInscrito = await _context.Inscripciones.AnyAsync(i => i.EstudianteId == user.Id && i.CatedraId == clase.MateriaId);
-                if (yaEnClase || yaInscrito)
+                // Valida únicamente si ya está inscrito en esta clase específica:
+                // _context.Inscripciones.AnyAsync(i => i.EstudianteId == estudiante.Id && i.ClaseId == claseId)
+                var yaEnEstaClase = await _context.Inscripciones.AnyAsync(i => i.EstudianteId == user.Id && i.ClaseId == cId)
+                                    || clase.Estudiantes.Any(e => e.Id == user.Id);
+
+                if (yaEnEstaClase)
                 {
                     if (itemsToProcess.Count == 1)
                     {
-                        return BadRequest(new { message = "El estudiante ya se encuentra inscrito en esta cátedra/clase." });
+                        return BadRequest(new { message = "El estudiante ya está inscrito en esta clase." });
                     }
                     continue;
                 }
 
                 // Añadir a la clase
-                clase.Estudiantes.Add(user);
+                if (!clase.Estudiantes.Any(e => e.Id == user.Id))
+                {
+                    clase.Estudiantes.Add(user);
+                }
 
-                // Inscribir en la cátedra/materia de la clase si no existe inscripción
-                _context.Inscripciones.Add(new Inscripcion
+                // Si NO está en esta clase: crea la nueva inscripción (Inscripcion { EstudianteId = estudiante.Id, ClaseId = claseId })
+                var nuevaInscripcion = new Inscripcion
                 {
                     EstudianteId = user.Id,
-                    CatedraId = clase.MateriaId,
+                    ClaseId = cId,
+                    CatedraId = catedra?.Id ?? (clase.MateriaId > 0 ? clase.MateriaId : cId),
                     PromedioActual = 75.0,
                     AlertaRendimiento = false
-                });
+                };
+                _context.Inscripciones.Add(nuevaInscripcion);
+
+                var correoDestino = user.Persona?.Correo ?? user.Username;
+                var nombreEstudiante = user.Persona != null ? $"{user.Persona.Nombre} {user.Persona.Apellido}".Trim() : user.Username;
 
                 // Si es nuevo o no tenía credenciales, despachar correo
                 if (isNewOrWithoutCreds && !string.IsNullOrWhiteSpace(tempPassword))
                 {
-                    var correoDestino = user.Persona?.Correo ?? user.Username;
-                    var nombreEstudiante = user.Persona != null ? $"{user.Persona.Nombre} {user.Persona.Apellido}".Trim() : user.Username;
                     try
                     {
                         await _emailService.SendCredentialsAsync(correoDestino, nombreEstudiante, user.Username, tempPassword, "Estudiante");
@@ -255,6 +272,22 @@ namespace back.Controllers
                     {
                         _logger.LogWarning(ex, "No se pudo enviar el correo de credenciales a {Email}", correoDestino);
                     }
+                }
+
+                // Despacha un correo SMTP notificando: "Has sido inscrito a la cátedra: {nombreCatedra}"
+                try
+                {
+                    var subject = $"Inscripción a cátedra: {nombreCatedra}";
+                    var body = $"<p>Estimado/a <strong>{nombreEstudiante}</strong>,</p>" +
+                               $"<p>Has sido inscrito a la cátedra: <strong>{nombreCatedra}</strong>.</p>" +
+                               $"<p>Clase asignada: {clase.Nombre}</p>" +
+                               $"<p>Ya puedes ingresar a la plataforma SIGAC para consultar el contenido y las sesiones de clase programadas.</p>";
+                    await _emailService.SendEmailAsync(correoDestino, subject, body);
+                    _logger.LogInformation("Notificación de inscripción a cátedra {Catedra} enviada a {Email}", nombreCatedra, correoDestino);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "No se pudo enviar la notificación de inscripción por correo a {Email}", correoDestino);
                 }
 
                 procesados.Add(new EstudianteProcesadoItem
@@ -273,7 +306,7 @@ namespace back.Controllers
 
             if (!procesados.Any())
             {
-                return BadRequest(new { message = "El estudiante ya se encuentra inscrito en esta cátedra/clase." });
+                return BadRequest(new { message = "El estudiante ya está inscrito en esta clase." });
             }
 
             await _context.SaveChangesAsync();
@@ -350,17 +383,33 @@ namespace back.Controllers
                     .FirstOrDefaultAsync(u => (u.Persona != null && u.Persona.Correo.ToLower() == normEmail) || u.Username.ToLower() == normEmail);
             }
 
+            // 3. Buscar por Cédula
+            if (user == null && !string.IsNullOrWhiteSpace(dto.Cedula))
+            {
+                var normCed = dto.Cedula.Trim();
+                user = await _context.Users
+                    .Include(u => u.Persona)
+                    .FirstOrDefaultAsync(u => (u.Persona != null && u.Persona.Cedula == normCed) || u.Username == normCed);
+            }
+
+            // 4. Buscar por Username
             if (user == null && !string.IsNullOrWhiteSpace(dto.Username))
             {
                 var normUser = dto.Username.Trim().ToLowerInvariant();
                 user = await _context.Users
                     .Include(u => u.Persona)
-                    .FirstOrDefaultAsync(u => u.Username.ToLower() == normUser);
+                    .FirstOrDefaultAsync(u => u.Username.ToLower() == normUser || (u.Persona != null && u.Persona.Cedula == normUser));
             }
 
             // Si el usuario existe
             if (user != null)
             {
+                // Si la persona ya existe pero no tenía cédula y vino una en la petición, actualizarla
+                if (user.Persona != null && string.IsNullOrWhiteSpace(user.Persona.Cedula) && !string.IsNullOrWhiteSpace(dto.Cedula))
+                {
+                    user.Persona.Cedula = dto.Cedula.Trim();
+                }
+
                 // Si no tiene credenciales válidas
                 if (user.PasswordSalt == null || user.PasswordSalt.Length == 0 || user.PasswordHash == null || user.PasswordHash.Length == 0)
                 {
@@ -411,6 +460,7 @@ namespace back.Controllers
                     Nombre = cleanNombre,
                     Apellido = cleanApellido,
                     Correo = cleanEmail,
+                    Cedula = !string.IsNullOrWhiteSpace(dto.Cedula) ? dto.Cedula.Trim() : null,
                     Rol = "Estudiante",
                     UserId = user.Id
                 };
@@ -442,20 +492,31 @@ namespace back.Controllers
 
             // Autorización: Docente de la clase o estudiante inscrito en la clase
             var isDocente = clase.DocenteId == UserId.Value;
-            var isStudent = clase.Estudiantes.Any(e => e.Id == UserId.Value);
+            var isStudent = clase.Estudiantes.Any(e => e.Id == UserId.Value) ||
+                            await _context.Inscripciones.AnyAsync(i => i.EstudianteId == UserId.Value && i.ClaseId == cId);
 
             if (!isDocente && !isStudent)
             {
                 return Forbid("No tienes permiso para ver los estudiantes de esta clase.");
             }
 
-            var estudiantesDto = clase.Estudiantes.Select(e => new UserDto
-            {
-                Id = e.Id,
-                Username = e.Username,
-                // No incluir PasswordHash ni PasswordSalt por seguridad
-                // Puedes incluir otros datos de Persona si es necesario
-            }).ToList();
+            var estudiantesFromClase = clase.Estudiantes.ToList();
+            var estudiantesFromInscripciones = await _context.Inscripciones
+                .Where(i => i.ClaseId == cId)
+                .Include(i => i.Estudiante)
+                .Select(i => i.Estudiante)
+                .ToListAsync();
+
+            var estudiantesDto = estudiantesFromClase
+                .Concat(estudiantesFromInscripciones)
+                .Where(e => e != null)
+                .DistinctBy(e => e.Id)
+                .Select(e => new UserDto
+                {
+                    Id = e.Id,
+                    Username = e.Username,
+                    // No incluir PasswordHash ni PasswordSalt por seguridad
+                }).ToList();
 
             return Ok(estudiantesDto);
         }
@@ -540,7 +601,7 @@ namespace back.Controllers
                 .Include(c => c.Docente)
                     .ThenInclude(d => d.Persona)
                 .Include(c => c.Estudiantes)
-                .Where(c => c.Estudiantes.Any(e => e.Id == targetId) || _context.Inscripciones.Any(i => i.EstudianteId == targetId && i.CatedraId == c.MateriaId))
+                .Where(c => c.Estudiantes.Any(e => e.Id == targetId) || _context.Inscripciones.Any(i => i.EstudianteId == targetId && (i.ClaseId == c.Id || i.CatedraId == c.MateriaId)))
                 .Select(c => new
                 {
                     id = c.Id,
@@ -559,7 +620,9 @@ namespace back.Controllers
                 })
                 .ToListAsync();
 
-            return Ok(clases);
+            var clasesDistinct = clases.DistinctBy(c => c.id).ToList();
+
+            return Ok(clasesDistinct);
         }
     }
 

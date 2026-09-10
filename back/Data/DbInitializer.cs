@@ -222,6 +222,10 @@ namespace back.Data
                 context.Clases.Add(clase1);
                 await context.SaveChangesAsync();
 
+                inscripcionEst1.ClaseId = clase1.Id;
+                inscripcionAyu1.ClaseId = clase1.Id;
+                await context.SaveChangesAsync();
+
                 var sesionPresencial = new ClaseSesion
                 {
                     MateriaId = materia1.Id,

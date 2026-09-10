@@ -48,7 +48,7 @@ namespace back.Data
 
             // Relaciones de Inscripcion
             modelBuilder.Entity<Inscripcion>()
-                .HasKey(i => new { i.EstudianteId, i.CatedraId });
+                .HasKey(i => i.Id);
 
             modelBuilder.Entity<Inscripcion>()
                 .HasOne(i => i.Estudiante)
@@ -59,7 +59,14 @@ namespace back.Data
             modelBuilder.Entity<Inscripcion>()
                 .HasOne(i => i.Catedra)
                 .WithMany(c => c.Inscripciones)
-                .HasForeignKey(i => i.CatedraId);
+                .HasForeignKey(i => i.CatedraId)
+                .IsRequired(false);
+
+            modelBuilder.Entity<Inscripcion>()
+                .HasOne(i => i.Clase)
+                .WithMany()
+                .HasForeignKey(i => i.ClaseId)
+                .IsRequired(false);
 
             // Relaciones de Catedra
             modelBuilder.Entity<Catedra>()

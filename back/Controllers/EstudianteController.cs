@@ -41,11 +41,15 @@ namespace back.Controllers
         [HttpGet]
         public async Task<IActionResult> GetAllEstudiantes()
         {
-            var estudiantes = await _context.Users
+            var users = await _context.Users
                 .Include(u => u.Persona)
                 .Include(u => u.Inscripciones)
                     .ThenInclude(i => i.Catedra)
                 .Where(u => u.Persona != null && (u.Persona.Rol.Contains("Estudiante") || u.Persona.Rol.Contains("Ayudante")))
+                .ToListAsync();
+
+            var estudiantes = users
+                .DistinctBy(u => u.Id)
                 .Select(u => new
                 {
                     id = u.Id,
@@ -57,6 +61,7 @@ namespace back.Controllers
                     nombreCompleto = $"{u.Persona.Nombre} {u.Persona.Apellido}".Trim(),
                     correo = u.Persona.Correo,
                     email = u.Persona.Correo,
+                    cedula = u.Persona.Cedula ?? string.Empty,
                     rol = u.Persona.Rol,
                     roles = u.Persona.GetRoles(),
                     materiasInscritas = u.Inscripciones.Count,
@@ -64,11 +69,11 @@ namespace back.Controllers
                     cursos = u.Inscripciones.Select(i => new
                     {
                         catedraId = i.CatedraId,
-                        nombre = i.Catedra.Nombre,
+                        nombre = i.Catedra != null ? i.Catedra.Nombre : "Cátedra General",
                         promedio = i.PromedioActual
                     }).ToList()
                 })
-                .ToListAsync();
+                .ToList();
 
             return Ok(estudiantes);
         }

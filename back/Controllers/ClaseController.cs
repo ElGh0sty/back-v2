@@ -217,24 +217,29 @@ namespace back.Controllers
                 var (user, isNewOrWithoutCreds, tempPassword) = await ResolveOrCreateEstudianteAsync(item);
                 if (user == null) continue;
 
-                // Añadir a la clase si no está
-                if (!clase.Estudiantes.Any(e => e.Id == user.Id))
+                // Verificar si el estudiante ya cuenta con una inscripción activa en esa clase
+                var yaEnClase = clase.Estudiantes.Any(e => e.Id == user.Id);
+                var yaInscrito = await _context.Inscripciones.AnyAsync(i => i.EstudianteId == user.Id && i.CatedraId == clase.MateriaId);
+                if (yaEnClase || yaInscrito)
                 {
-                    clase.Estudiantes.Add(user);
+                    if (itemsToProcess.Count == 1)
+                    {
+                        return BadRequest(new { message = "El estudiante ya se encuentra inscrito en esta cátedra/clase." });
+                    }
+                    continue;
                 }
 
+                // Añadir a la clase
+                clase.Estudiantes.Add(user);
+
                 // Inscribir en la cátedra/materia de la clase si no existe inscripción
-                var yaInscrito = await _context.Inscripciones.AnyAsync(i => i.EstudianteId == user.Id && i.CatedraId == clase.MateriaId);
-                if (!yaInscrito)
+                _context.Inscripciones.Add(new Inscripcion
                 {
-                    _context.Inscripciones.Add(new Inscripcion
-                    {
-                        EstudianteId = user.Id,
-                        CatedraId = clase.MateriaId,
-                        PromedioActual = 75.0,
-                        AlertaRendimiento = false
-                    });
-                }
+                    EstudianteId = user.Id,
+                    CatedraId = clase.MateriaId,
+                    PromedioActual = 75.0,
+                    AlertaRendimiento = false
+                });
 
                 // Si es nuevo o no tenía credenciales, despachar correo
                 if (isNewOrWithoutCreds && !string.IsNullOrWhiteSpace(tempPassword))
@@ -264,6 +269,11 @@ namespace back.Controllers
                     tempPassword = tempPassword,
                     temporalPassword = tempPassword
                 });
+            }
+
+            if (!procesados.Any())
+            {
+                return BadRequest(new { message = "El estudiante ya se encuentra inscrito en esta cátedra/clase." });
             }
 
             await _context.SaveChangesAsync();
@@ -511,6 +521,45 @@ namespace back.Controllers
             await _context.SaveChangesAsync();
 
             return Ok(new { success = true, message = "Estudiante removido" });
+        }
+
+        // Endpoint para obtener las clases en las que está registrado el estudiante
+        [HttpGet("estudiante/{id}")]
+        [HttpGet("/api/estudiante/{id}/clases")]
+        public async Task<IActionResult> GetClasesEstudiante(long id)
+        {
+            int intId = id <= int.MaxValue ? (int)id : 0;
+            var user = await _context.Users
+                .Include(u => u.Persona)
+                .FirstOrDefaultAsync(u => u.Id == intId || (u.Persona != null && (u.Persona.Id == intId || u.Persona.UserId == intId)));
+
+            var targetId = user != null ? user.Id : intId;
+
+            var clases = await _context.Clases
+                .Include(c => c.Materia)
+                .Include(c => c.Docente)
+                    .ThenInclude(d => d.Persona)
+                .Include(c => c.Estudiantes)
+                .Where(c => c.Estudiantes.Any(e => e.Id == targetId) || _context.Inscripciones.Any(i => i.EstudianteId == targetId && i.CatedraId == c.MateriaId))
+                .Select(c => new
+                {
+                    id = c.Id,
+                    claseId = c.Id,
+                    nombre = c.Nombre,
+                    materiaId = c.MateriaId,
+                    materia = c.Materia != null ? c.Materia.Nombre : "",
+                    nombreMateria = c.Materia != null ? c.Materia.Nombre : "",
+                    docenteId = c.DocenteId,
+                    docente = c.Docente != null && c.Docente.Persona != null
+                        ? $"{c.Docente.Persona.Nombre} {c.Docente.Persona.Apellido}".Trim()
+                        : "Docente asignado",
+                    aula = "Aula Principal",
+                    horario = "Horario Regular",
+                    paralelo = "A"
+                })
+                .ToListAsync();
+
+            return Ok(clases);
         }
     }
 

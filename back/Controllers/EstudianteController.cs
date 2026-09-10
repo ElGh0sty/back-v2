@@ -60,7 +60,7 @@ namespace back.Controllers
                     rol = u.Persona.Rol,
                     roles = u.Persona.GetRoles(),
                     materiasInscritas = u.Inscripciones.Count,
-                    promedioGeneral = u.Inscripciones.Any() ? Math.Round(u.Inscripciones.Average(i => i.PromedioActual), 2) : 75.0,
+                    promedioGeneral = u.Inscripciones.Any() ? Math.Round(u.Inscripciones.Average(i => i.PromedioActual), 2) : 0.0,
                     cursos = u.Inscripciones.Select(i => new
                     {
                         catedraId = i.CatedraId,
@@ -303,60 +303,15 @@ namespace back.Controllers
                 .Where(i => i.EstudianteId == targetUserId || i.EstudianteId == intId)
                 .ToListAsync();
 
-            // Si el estudiante no tiene registro previo de inscripciones, generar uno por defecto en el momento para no romper la interfaz
-            if (!inscripciones.Any())
-            {
-                var catedras = await _context.Catedras.Take(3).ToListAsync();
-                if (catedras.Any())
-                {
-                    foreach (var cat in catedras)
-                    {
-                        var defaultInscripcion = new Inscripcion
-                        {
-                            EstudianteId = targetUserId,
-                            CatedraId = cat.Id,
-                            PromedioActual = 75.0,
-                            AlertaRendimiento = false
-                        };
-                        _context.Inscripciones.Add(defaultInscripcion);
-                        inscripciones.Add(defaultInscripcion);
-                    }
-                    await _context.SaveChangesAsync();
-                }
-                else
-                {
-                    var defaultCatedra = new Catedra
-                    {
-                        Nombre = "Cátedra Institucional",
-                        Semestre = "2026-1",
-                        MinimoNota = 70.0
-                    };
-                    _context.Catedras.Add(defaultCatedra);
-                    await _context.SaveChangesAsync();
-
-                    var defaultInscripcion = new Inscripcion
-                    {
-                        EstudianteId = targetUserId,
-                        CatedraId = defaultCatedra.Id,
-                        PromedioActual = 80.0,
-                        AlertaRendimiento = false
-                    };
-                    _context.Inscripciones.Add(defaultInscripcion);
-                    inscripciones.Add(defaultInscripcion);
-                    await _context.SaveChangesAsync();
-                }
-            }
-
             var totalCursos = await _context.Catedras.CountAsync();
-            if (totalCursos == 0) totalCursos = inscripciones.Count > 0 ? inscripciones.Count : 1;
             var cursosAprobados = inscripciones.Count(i => i.PromedioActual >= 60.0);
-            var porcentajeAvance = totalCursos > 0 ? (double)cursosAprobados / totalCursos * 100d : 100d;
-            var promedioGeneral = inscripciones.Any() ? inscripciones.Average(i => i.PromedioActual) : 75.0;
+            var porcentajeAvance = totalCursos > 0 ? (double)cursosAprobados / totalCursos * 100d : 0.0;
+            var promedioGeneral = inscripciones.Any() ? inscripciones.Average(i => i.PromedioActual) : 0.0;
             var promedioCurso = catedraId.HasValue
                 ? (double?)inscripciones
                     .Where(i => i.CatedraId == catedraId.Value)
                     .Select(i => i.PromedioActual)
-                    .DefaultIfEmpty(75.0)
+                    .DefaultIfEmpty(0.0)
                     .Average()
                 : (double?)null;
 
@@ -364,14 +319,16 @@ namespace back.Controllers
             {
                 EstudianteId = targetUserId,
                 PorcentajeAvanceMalla = Math.Round(porcentajeAvance, 2),
-                CursosAprobados = cursosAprobados > 0 ? cursosAprobados : totalCursos,
+                CursosAprobados = cursosAprobados,
                 TotalCursos = totalCursos,
                 PromedioGeneral = Math.Round(promedioGeneral, 2),
                 PromedioCurso = promedioCurso.HasValue ? (double?)Math.Round(promedioCurso.Value, 2) : (double?)null,
                 CursoId = catedraId,
                 CumpleMalla = porcentajeAvance >= 50,
                 CumplePromedioGeneral = promedioGeneral >= 60.0,
-                CumplePromedioCurso = !catedraId.HasValue || (promedioCurso.HasValue && promedioCurso.Value >= 60.0)
+                CumplePromedioCurso = !catedraId.HasValue || (promedioCurso.HasValue && promedioCurso.Value >= 60.0),
+                EsAptoParaAyudantia = porcentajeAvance >= 50 && promedioGeneral >= 60.0 && (!catedraId.HasValue || (promedioCurso.HasValue && promedioCurso.Value >= 60.0)),
+                Mensaje = inscripciones.Any() ? "Validación de requisitos completada." : "El estudiante no registra materias inscritas en el sistema."
             });
         }
 
@@ -436,16 +393,66 @@ namespace back.Controllers
                 .Select(i => new
                 {
                     id = i.Catedra.Id,
+                    materiaId = i.Catedra.Id,
+                    catedraId = i.Catedra.Id,
                     codigo = $"CAT-{i.Catedra.Id:D3}",
                     nombre = i.Catedra.Nombre,
                     descripcion = $"Cátedra correspondiente al semestre {i.Catedra.Semestre}",
                     docente = i.Catedra.Docente != null && i.Catedra.Docente.Persona != null
-                        ? $"{i.Catedra.Docente.Persona.Nombre} {i.Catedra.Docente.Persona.Apellido}"
+                        ? $"{i.Catedra.Docente.Persona.Nombre} {i.Catedra.Docente.Persona.Apellido}".Trim()
+                        : "Docente por asignar",
+                    nombreDocente = i.Catedra.Docente != null && i.Catedra.Docente.Persona != null
+                        ? $"{i.Catedra.Docente.Persona.Nombre} {i.Catedra.Docente.Persona.Apellido}".Trim()
                         : "Docente por asignar",
                     creditos = 4,
                     semana = 8,
                     totalSemanas = 16,
                     semestre = i.Catedra.Semestre,
+                    promedio = i.PromedioActual,
+                    promedioActual = i.PromedioActual,
+                    grupo = "Grupo A"
+                })
+                .ToListAsync();
+
+            return Ok(materias);
+        }
+
+        // Endpoint para consultar las materias reales del estudiante por id
+        [HttpGet("{id}/materias")]
+        public async Task<IActionResult> GetMateriasEstudiante(long id)
+        {
+            int intId = id <= int.MaxValue ? (int)id : 0;
+            var user = await _context.Users
+                .Include(u => u.Persona)
+                .FirstOrDefaultAsync(u => u.Id == intId || (u.Persona != null && (u.Persona.Id == intId || u.Persona.UserId == intId)));
+
+            var targetId = user != null ? user.Id : intId;
+
+            var materias = await _context.Inscripciones
+                .Where(i => i.EstudianteId == targetId)
+                .Include(i => i.Catedra)
+                    .ThenInclude(c => c.Docente)
+                        .ThenInclude(d => d.Persona)
+                .Select(i => new
+                {
+                    id = i.Catedra.Id,
+                    materiaId = i.Catedra.Id,
+                    catedraId = i.Catedra.Id,
+                    codigo = $"CAT-{i.Catedra.Id:D3}",
+                    nombre = i.Catedra.Nombre,
+                    descripcion = $"Cátedra correspondiente al semestre {i.Catedra.Semestre}",
+                    docente = i.Catedra.Docente != null && i.Catedra.Docente.Persona != null
+                        ? $"{i.Catedra.Docente.Persona.Nombre} {i.Catedra.Docente.Persona.Apellido}".Trim()
+                        : "Docente por asignar",
+                    nombreDocente = i.Catedra.Docente != null && i.Catedra.Docente.Persona != null
+                        ? $"{i.Catedra.Docente.Persona.Nombre} {i.Catedra.Docente.Persona.Apellido}".Trim()
+                        : "Docente por asignar",
+                    creditos = 4,
+                    semana = 8,
+                    totalSemanas = 16,
+                    semestre = i.Catedra.Semestre,
+                    promedio = i.PromedioActual,
+                    promedioActual = i.PromedioActual,
                     grupo = "Grupo A"
                 })
                 .ToListAsync();
@@ -515,7 +522,7 @@ namespace back.Controllers
         {
             if (id > int.MaxValue)
             {
-                return Ok(new { success = true, message = "Estudiante eliminado exitosamente." });
+                return Ok(new { success = true, message = "Registro eliminado del directorio" });
             }
 
             int intId = (int)id;
@@ -539,7 +546,7 @@ namespace back.Controllers
                     _context.Personas.Remove(personaSolo);
                     await _context.SaveChangesAsync();
                 }
-                return Ok(new { success = true, message = "Estudiante eliminado exitosamente." });
+                return Ok(new { success = true, message = "Registro eliminado del directorio" });
             }
 
             if (user.Inscripciones != null && user.Inscripciones.Any())
@@ -568,6 +575,12 @@ namespace back.Controllers
                 user.ClasesEstudiante.Clear();
             }
 
+            var actividadesRealizadas = await _context.EstudianteActividadesRealizadas.Where(e => e.EstudianteId == user.Id).ToListAsync();
+            if (actividadesRealizadas.Any())
+            {
+                _context.EstudianteActividadesRealizadas.RemoveRange(actividadesRealizadas);
+            }
+
             if (user.Persona != null)
             {
                 _context.Personas.Remove(user.Persona);
@@ -576,7 +589,7 @@ namespace back.Controllers
             _context.Users.Remove(user);
             await _context.SaveChangesAsync();
 
-            return Ok(new { success = true, message = "Estudiante eliminado exitosamente junto con sus inscripciones y registros asociados." });
+            return Ok(new { success = true, message = "Registro eliminado del directorio" });
         }
     }
 }

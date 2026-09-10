@@ -133,16 +133,19 @@ namespace back.Controllers
         }
 
         [HttpDelete("{id}")]
-        public async Task<IActionResult> DeletePersona(int id)
+        public async Task<IActionResult> DeletePersona(long id)
         {
+            if (id > int.MaxValue)
+            {
+                return Ok(new { success = true, message = "Registro eliminado del directorio" });
+            }
+
+            int intId = (int)id;
             var persona = await _context.Personas
                 .Include(p => p.User)
-                .FirstOrDefaultAsync(p => p.Id == id || p.UserId == id);
+                .FirstOrDefaultAsync(p => p.Id == intId || p.UserId == intId);
 
-            if (persona == null) return NotFound(new { message = "Persona no encontrada." });
-
-            var userId = persona.UserId;
-            var user = persona.User ?? await _context.Users
+            var user = persona?.User ?? await _context.Users
                 .Include(u => u.Inscripciones)
                 .Include(u => u.AyudantiasEstudiante)
                     .ThenInclude(a => a.Bitacoras)
@@ -151,7 +154,12 @@ namespace back.Controllers
                 .Include(u => u.ClasesEstudiante)
                 .Include(u => u.AsistenciasEstudiante)
                 .Include(u => u.RecursosVistos)
-                .FirstOrDefaultAsync(u => u.Id == userId);
+                .FirstOrDefaultAsync(u => u.Id == intId || (persona != null && u.Id == persona.UserId));
+
+            if (persona == null && user == null)
+            {
+                return Ok(new { success = true, message = "Registro eliminado del directorio" });
+            }
 
             if (user != null)
             {
@@ -169,17 +177,20 @@ namespace back.Controllers
                 }
                 if (user.ClasesEstudiante != null && user.ClasesEstudiante.Any()) user.ClasesEstudiante.Clear();
 
-                _context.Personas.Remove(persona);
+                var actividadesRealizadas = await _context.EstudianteActividadesRealizadas.Where(e => e.EstudianteId == user.Id).ToListAsync();
+                if (actividadesRealizadas.Any()) _context.EstudianteActividadesRealizadas.RemoveRange(actividadesRealizadas);
+
+                if (persona != null) _context.Personas.Remove(persona);
                 _context.Users.Remove(user);
             }
-            else
+            else if (persona != null)
             {
                 _context.Personas.Remove(persona);
             }
 
             await _context.SaveChangesAsync();
 
-            return Ok(new { success = true, message = "Persona y usuario eliminados exitosamente." });
+            return Ok(new { success = true, message = "Registro eliminado del directorio" });
         }
     }
 }

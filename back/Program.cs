@@ -17,6 +17,9 @@ builder.Services.AddSwaggerGen(c =>
 {
     c.SwaggerDoc("v1", new OpenApiInfo { Title = "SIGAC API", Version = "v1" });
 
+    // Resuelve posibles acciones duplicadas o con la misma ruta
+    c.ResolveConflictingActions(apiDescriptions => apiDescriptions.First());
+
     // Evita colisiones de nombres de clases/DTOs
     c.CustomSchemaIds(type => type.FullName);
 
@@ -114,8 +117,19 @@ app.UseSwaggerUI(c =>
         if (stream == null) return null!;
         using var reader = new StreamReader(stream);
         var html = reader.ReadToEnd();
-        // Fix: Evita el error 'Cannot set property fetch of #<Window> which has only a getter' en navegadores modernos (Edge/Chromium)
-        var patchedHtml = html.Replace("window.fetch = undefined;", "// window.fetch = undefined;");
+
+        // 1. Elimina completamente el script obsoleto de 2017 para Edge que intentaba hacer 'window.fetch = undefined'
+        var patchedHtml = System.Text.RegularExpressions.Regex.Replace(
+            html,
+            @"<script>\s*if\s*\(\s*window\.navigator\.userAgent\.indexOf\(""Edge""\)[^<]*</script>",
+            "",
+            System.Text.RegularExpressions.RegexOptions.Singleline);
+        patchedHtml = patchedHtml.Replace("window.fetch = undefined;", "");
+
+        // 2. Inyecta protector de window.fetch en el <head> para navegadores modernos o iframes donde fetch sea getter-only
+        var fetchGuardScript = "<head><script>(function(){try{var _f=window.fetch;Object.defineProperty(window,'fetch',{get:function(){return _f;},set:function(fn){if(typeof fn==='function'){_f=fn;}},configurable:true,enumerable:true});}catch(e){}})();</script>";
+        patchedHtml = patchedHtml.Replace("<head>", fetchGuardScript);
+
         return new MemoryStream(Encoding.UTF8.GetBytes(patchedHtml));
     };
 });

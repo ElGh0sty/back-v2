@@ -16,7 +16,6 @@ namespace back.Controllers
     [Authorize]
     [ApiController]
     [Route("api/[controller]")]
-    [Route("api/docente")]
     [Route("api/docentes")]
     public class DocenteController : ControllerBase
     {

@@ -20,7 +20,6 @@ namespace back.Controllers
     [Authorize]
     [ApiController]
     [Route("api/[controller]")]
-    [Route("api/clase")]
     [Route("api/clases")]
     public class ClaseController : ControllerBase
     {
@@ -178,9 +177,8 @@ namespace back.Controllers
             return Ok(clases.DistinctBy(c => c.id).ToList());
         }
 
-        // Endpoint para obtener clases de un docente: GET /api/Clase/docente/{docenteId}
+        // Endpoint para obtener clases de un docente: GET /api/Clase/docente/{docenteId} o /api/clases/docente/{docenteId}
         [HttpGet("docente/{docenteId}")]
-        [HttpGet("/api/clases/docente/{docenteId}")]
         public async Task<IActionResult> GetClasesByDocente(long docenteId)
         {
             var doc = await GetDefaultDocenteAsync(docenteId);

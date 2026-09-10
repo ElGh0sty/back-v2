@@ -1,9 +1,11 @@
 using back.Data;
 using back.DTOs;
 using back.Entities;
+using back.Services;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging;
 using System.Linq;
 using System.Threading.Tasks;
 
@@ -15,10 +17,14 @@ namespace back.Controllers
     public class DocenteController : ControllerBase
     {
         private readonly AppDbContext _context;
+        private readonly IEmailService _emailService;
+        private readonly ILogger<DocenteController> _logger;
 
-        public DocenteController(AppDbContext context)
+        public DocenteController(AppDbContext context, IEmailService emailService, ILogger<DocenteController> logger)
         {
             _context = context;
+            _emailService = emailService;
+            _logger = logger;
         }
 
         // ... (métodos ya implementados) ...

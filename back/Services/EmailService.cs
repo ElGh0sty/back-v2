@@ -159,6 +159,11 @@ namespace back.Services
             return await SendEmailAsync(toEmail, subject, htmlBody);
         }
 
+        public Task<bool> SendCredentialsAsync(string toEmail, string nombreCompleto, string username, string password, string rol)
+        {
+            return SendCredentialsEmailAsync(toEmail, nombreCompleto, username, password, rol);
+        }
+
         public async Task<bool> SendPasswordResetEmailAsync(string toEmail, string nombreCompleto, string resetTokenOrTemporaryPassword)
         {
             var subject = "SIGAC - Restablecimiento de Contraseña";

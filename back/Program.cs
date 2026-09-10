@@ -108,6 +108,16 @@ app.UseSwaggerUI(c =>
 {
     c.SwaggerEndpoint("/swagger/v1/swagger.json", "SIGAC API V1");
     c.RoutePrefix = string.Empty;
+    c.IndexStream = () =>
+    {
+        var stream = c.GetType().Assembly.GetManifestResourceStream("Swashbuckle.AspNetCore.SwaggerUI.index.html");
+        if (stream == null) return null!;
+        using var reader = new StreamReader(stream);
+        var html = reader.ReadToEnd();
+        // Fix: Evita el error 'Cannot set property fetch of #<Window> which has only a getter' en navegadores modernos (Edge/Chromium)
+        var patchedHtml = html.Replace("window.fetch = undefined;", "// window.fetch = undefined;");
+        return new MemoryStream(Encoding.UTF8.GetBytes(patchedHtml));
+    };
 });
 
 // 3. Demás middlewares

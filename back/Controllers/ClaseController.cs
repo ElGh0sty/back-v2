@@ -1,12 +1,18 @@
 using back.Data;
 using back.DTOs;
 using back.Entities;
+using back.Services;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging;
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Security.Claims;
+using System.Security.Cryptography;
+using System.Text;
+using System.Text.Json;
 using System.Threading.Tasks;
 
 namespace back.Controllers
@@ -17,10 +23,14 @@ namespace back.Controllers
     public class ClaseController : ControllerBase
     {
         private readonly AppDbContext _context;
+        private readonly IEmailService _emailService;
+        private readonly ILogger<ClaseController> _logger;
 
-        public ClaseController(AppDbContext context)
+        public ClaseController(AppDbContext context, IEmailService emailService, ILogger<ClaseController> logger)
         {
             _context = context;
+            _emailService = emailService;
+            _logger = logger;
         }
 
         private int? UserId
@@ -136,8 +146,10 @@ namespace back.Controllers
         }
 
         // Endpoint para añadir estudiantes a una clase existente (solo docentes de la clase)
+        // Soporta tanto /api/Clase/{claseId}/estudiantes como /api/Docente/clases/{claseId}/estudiantes
         [HttpPost("{claseId}/estudiantes")]
-        public async Task<IActionResult> AddEstudiantesToClase(int claseId, [FromBody] List<int> estudianteIds)
+        [HttpPost("/api/Docente/clases/{claseId}/estudiantes")]
+        public async Task<IActionResult> AddEstudiantesToClase(int claseId, [FromBody] JsonElement payload)
         {
             if (UserId == null) return Unauthorized();
             if (!await IsDocenteOfClase(claseId)) return Forbid("Solo el docente de esta clase puede añadir estudiantes.");
@@ -148,26 +160,235 @@ namespace back.Controllers
 
             if (clase == null) return NotFound(new { message = "Clase no encontrada." });
 
-            var newEstudiantes = await _context.Users
-                                            .Where(u => estudianteIds.Contains(u.Id) && u.Persona.Rol == "Estudiante") // Corregido: Tipo -> Rol
-                                            .ToListAsync();
+            var itemsToProcess = new List<InscribirEstudianteClaseDto>();
 
-            if (newEstudiantes.Count != estudianteIds.Count)
+            if (payload.ValueKind == JsonValueKind.Array)
             {
-                return BadRequest("Algunos IDs de estudiantes proporcionados no son válidos o no corresponden a estudiantes.");
+                foreach (var el in payload.EnumerateArray())
+                {
+                    if (el.ValueKind == JsonValueKind.Number && el.TryGetInt32(out var idNum))
+                    {
+                        itemsToProcess.Add(new InscribirEstudianteClaseDto { EstudianteId = idNum });
+                    }
+                    else if (el.ValueKind == JsonValueKind.Object)
+                    {
+                        itemsToProcess.Add(ParseDtoFromJsonElement(el));
+                    }
+                }
+            }
+            else if (payload.ValueKind == JsonValueKind.Number && payload.TryGetInt32(out var singleId))
+            {
+                itemsToProcess.Add(new InscribirEstudianteClaseDto { EstudianteId = singleId });
+            }
+            else if (payload.ValueKind == JsonValueKind.Object)
+            {
+                var dto = ParseDtoFromJsonElement(payload);
+                if (dto.EstudianteIds != null && dto.EstudianteIds.Any())
+                {
+                    foreach (var id in dto.EstudianteIds)
+                    {
+                        itemsToProcess.Add(new InscribirEstudianteClaseDto { EstudianteId = id });
+                    }
+                }
+                else
+                {
+                    itemsToProcess.Add(dto);
+                }
             }
 
-            foreach (var estudiante in newEstudiantes)
+            if (!itemsToProcess.Any())
             {
-                if (!clase.Estudiantes.Any(e => e.Id == estudiante.Id))
+                return BadRequest("No se proporcionaron datos de estudiantes a añadir.");
+            }
+
+            var procesados = new List<object>();
+
+            foreach (var item in itemsToProcess)
+            {
+                var (user, isNewOrWithoutCreds, tempPassword) = await ResolveOrCreateEstudianteAsync(item);
+                if (user == null) continue;
+
+                // Añadir a la clase si no está
+                if (!clase.Estudiantes.Any(e => e.Id == user.Id))
                 {
-                    clase.Estudiantes.Add(estudiante);
+                    clase.Estudiantes.Add(user);
                 }
+
+                // Inscribir en la cátedra/materia de la clase si no existe inscripción
+                var yaInscrito = await _context.Inscripciones.AnyAsync(i => i.EstudianteId == user.Id && i.CatedraId == clase.MateriaId);
+                if (!yaInscrito)
+                {
+                    _context.Inscripciones.Add(new Inscripcion
+                    {
+                        EstudianteId = user.Id,
+                        CatedraId = clase.MateriaId,
+                        PromedioActual = 75.0,
+                        AlertaRendimiento = false
+                    });
+                }
+
+                // Si es nuevo o no tenía credenciales, despachar correo
+                if (isNewOrWithoutCreds && !string.IsNullOrWhiteSpace(tempPassword))
+                {
+                    var correoDestino = user.Persona?.Correo ?? user.Username;
+                    var nombreEstudiante = user.Persona != null ? $"{user.Persona.Nombre} {user.Persona.Apellido}".Trim() : user.Username;
+                    try
+                    {
+                        await _emailService.SendCredentialsAsync(correoDestino, nombreEstudiante, user.Username, tempPassword, "Estudiante");
+                        _logger.LogInformation("Credenciales despachadas por correo a {Email}", correoDestino);
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogWarning(ex, "No se pudo enviar el correo de credenciales a {Email}", correoDestino);
+                    }
+                }
+
+                procesados.Add(new
+                {
+                    user.Id,
+                    user.Username,
+                    Nombre = user.Persona?.Nombre ?? string.Empty,
+                    Apellido = user.Persona?.Apellido ?? string.Empty,
+                    Correo = user.Persona?.Correo ?? string.Empty,
+                    CredencialesEnviadas = isNewOrWithoutCreds
+                });
             }
 
             await _context.SaveChangesAsync();
 
-            return Ok(new { message = "Estudiantes añadidos exitosamente a la clase." });
+            return Ok(new
+            {
+                message = "Estudiantes añadidos exitosamente a la clase.",
+                totalProcesados = procesados.Count,
+                estudiantes = procesados
+            });
+        }
+
+        private InscribirEstudianteClaseDto ParseDtoFromJsonElement(JsonElement el)
+        {
+            var dto = new InscribirEstudianteClaseDto();
+            if (el.TryGetProperty("estudianteId", out var pEstId) && pEstId.TryGetInt32(out var estId)) dto.EstudianteId = estId;
+            else if (el.TryGetProperty("id", out var pId) && pId.TryGetInt32(out var idVal)) dto.EstudianteId = idVal;
+
+            if (el.TryGetProperty("estudianteIds", out var pIds) && pIds.ValueKind == JsonValueKind.Array)
+            {
+                dto.EstudianteIds = new List<int>();
+                foreach (var idEl in pIds.EnumerateArray())
+                {
+                    if (idEl.TryGetInt32(out var val)) dto.EstudianteIds.Add(val);
+                }
+            }
+
+            if (el.TryGetProperty("nombre", out var pNom)) dto.Nombre = pNom.GetString();
+            else if (el.TryGetProperty("nombres", out var pNoms)) dto.Nombre = pNoms.GetString();
+
+            if (el.TryGetProperty("apellido", out var pApe)) dto.Apellido = pApe.GetString();
+            else if (el.TryGetProperty("apellidos", out var pApes)) dto.Apellido = pApes.GetString();
+
+            if (el.TryGetProperty("correo", out var pCor)) dto.Correo = pCor.GetString();
+            else if (el.TryGetProperty("email", out var pMail)) dto.Correo = pMail.GetString();
+
+            if (el.TryGetProperty("cedula", out var pCed)) dto.Cedula = pCed.GetString();
+            if (el.TryGetProperty("username", out var pUser)) dto.Username = pUser.GetString();
+
+            return dto;
+        }
+
+        private async Task<(User? user, bool isNewOrWithoutCreds, string? tempPassword)> ResolveOrCreateEstudianteAsync(InscribirEstudianteClaseDto dto)
+        {
+            User? user = null;
+            bool isNewOrWithoutCreds = false;
+            string? tempPassword = null;
+
+            // 1. Buscar por ID
+            if (dto.EstudianteId.HasValue && dto.EstudianteId.Value > 0)
+            {
+                user = await _context.Users
+                    .Include(u => u.Persona)
+                    .FirstOrDefaultAsync(u => u.Id == dto.EstudianteId.Value || (u.Persona != null && (u.Persona.Id == dto.EstudianteId.Value || u.Persona.UserId == dto.EstudianteId.Value)));
+            }
+
+            // 2. Buscar por Correo o Username
+            if (user == null && !string.IsNullOrWhiteSpace(dto.Correo))
+            {
+                var normEmail = dto.Correo.Trim().ToLowerInvariant();
+                user = await _context.Users
+                    .Include(u => u.Persona)
+                    .FirstOrDefaultAsync(u => (u.Persona != null && u.Persona.Correo.ToLower() == normEmail) || u.Username.ToLower() == normEmail);
+            }
+
+            if (user == null && !string.IsNullOrWhiteSpace(dto.Username))
+            {
+                var normUser = dto.Username.Trim().ToLowerInvariant();
+                user = await _context.Users
+                    .Include(u => u.Persona)
+                    .FirstOrDefaultAsync(u => u.Username.ToLower() == normUser);
+            }
+
+            // Si el usuario existe
+            if (user != null)
+            {
+                // Si no tiene credenciales válidas
+                if (user.PasswordSalt == null || user.PasswordSalt.Length == 0 || user.PasswordHash == null || user.PasswordHash.Length == 0)
+                {
+                    isNewOrWithoutCreds = true;
+                    tempPassword = $"Uteq.{RandomNumberGenerator.GetInt32(100000, 999999)}!";
+                    using var hmac = new HMACSHA512();
+                    user.PasswordHash = hmac.ComputeHash(Encoding.UTF8.GetBytes(tempPassword));
+                    user.PasswordSalt = hmac.Key;
+                }
+                return (user, isNewOrWithoutCreds, tempPassword);
+            }
+
+            // Si el usuario no existe, crearlo como nuevo estudiante si tenemos datos mínimos
+            if (!string.IsNullOrWhiteSpace(dto.Correo) || !string.IsNullOrWhiteSpace(dto.Nombre))
+            {
+                isNewOrWithoutCreds = true;
+                var cleanEmail = !string.IsNullOrWhiteSpace(dto.Correo) 
+                    ? dto.Correo.Trim() 
+                    : $"estudiante.{RandomNumberGenerator.GetInt32(1000, 9999)}@uteq.edu.ec";
+                var cleanNombre = !string.IsNullOrWhiteSpace(dto.Nombre) ? dto.Nombre.Trim() : "Estudiante";
+                var cleanApellido = !string.IsNullOrWhiteSpace(dto.Apellido) ? dto.Apellido.Trim() : "Nuevo";
+
+                var baseUsername = !string.IsNullOrWhiteSpace(dto.Username)
+                    ? dto.Username.Trim().ToLowerInvariant()
+                    : cleanEmail.Contains("@") ? cleanEmail.Split('@')[0].ToLowerInvariant() : $"est.{cleanNombre.ToLowerInvariant()}";
+
+                var candidateUsername = baseUsername;
+                int counter = 1;
+                while (await _context.Users.AnyAsync(u => u.Username == candidateUsername))
+                {
+                    candidateUsername = $"{baseUsername}{counter++}";
+                }
+
+                tempPassword = $"Uteq.{RandomNumberGenerator.GetInt32(100000, 999999)}!";
+                using var hmac = new HMACSHA512();
+
+                user = new User
+                {
+                    Username = candidateUsername,
+                    PasswordHash = hmac.ComputeHash(Encoding.UTF8.GetBytes(tempPassword)),
+                    PasswordSalt = hmac.Key
+                };
+                _context.Users.Add(user);
+                await _context.SaveChangesAsync();
+
+                var persona = new Persona
+                {
+                    Nombre = cleanNombre,
+                    Apellido = cleanApellido,
+                    Correo = cleanEmail,
+                    Rol = "Estudiante",
+                    UserId = user.Id
+                };
+                _context.Personas.Add(persona);
+                await _context.SaveChangesAsync();
+                user.Persona = persona;
+
+                return (user, isNewOrWithoutCreds, tempPassword);
+            }
+
+            return (null, false, null);
         }
 
         // Endpoint para obtener los estudiantes de una clase (docentes de la clase o estudiantes de la clase)

@@ -1,36 +1,37 @@
 # SIGAC API (Sistema Integrado de Gestión Académica y Cátedras)
 
-Backend REST API migrado y optimizado para Node.js / Express con autenticación JWT, control de acceso basado en roles (RBAC) y documentación interactiva OpenAPI / Swagger UI.
+Backend REST API desarrollado en **C# con ASP.NET Core (.NET Web API)** y **Entity Framework Core**, con autenticación JWT, control de acceso basado en roles (RBAC) y documentación interactiva OpenAPI / Swagger UI.
 
-## Características
+## Stack Tecnológico Oficial
 
-- **Autenticación y Seguridad:** JWT (JSON Web Tokens) con hashing seguro compatible y jerarquía de roles (Administrador, Decano, Coordinador, Docente, Estudiante, Jurado).
-- **Gestión Académica:** Cátedras, asignaturas, clases y sesiones presenciales/virtuales con registro de asistencia.
-- **Materiales y Actividades:** Carga de recursos educativos, seguimiento de recursos vistos por estudiantes y entregas de actividades calificadas.
-- **Ayudantías de Cátedra:** Postulaciones con validación de promedio y requisitos de malla, bitácoras de tutoría con evidencias y seguimiento institucional.
-- **Tribunal y Jurados:** Programación de presentaciones y registro de evaluaciones con cálculo automático de promedios.
-- **Carga Masiva:** Importación masiva de estudiantes mediante archivos CSV y descarga de plantillas.
-- **Swagger UI:** Documentación interactiva disponible en la raíz `/` y en `/swagger`.
+- **Lenguaje y Framework:** C# (.NET 10 / ASP.NET Core Web API)
+- **Persistencia y ORM:** Entity Framework Core (PostgreSQL con soporte InMemory para desarrollo)
+- **Seguridad:** JWT Bearer Authentication con HMAC-SHA512
+- **Documentación Interactiva:** Swashbuckle Swagger UI OpenAPI
 
-## Usuarios de Prueba Preconfigurados
+## Estructura del Proyecto
 
-| Rol | Usuario | Contraseña |
-| --- | --- | --- |
-| **Administrador** | `admin` | `Admin123!` |
-| **Docente** | `carlos.docente` | `Docente123!` |
-| **Coordinador** | `elena.coordinador` | `Coord123!` |
-| **Jurado** | `manuel.jurado` | `Jurado123!` |
-| **Estudiante** | `jordy.estudiante` | `Estudiante123!` |
+```
+├── back/
+│   ├── Controllers/     # Controladores de la API (Clase, Docente, Estudiante, Login, etc.)
+│   ├── DTOs/            # Data Transfer Objects
+│   ├── Entities/        # Modelos de entidad de dominio de EF Core
+│   ├── Migrations/      # Migraciones de EF Core
+│   ├── Middleware/      # Manejo global de excepciones
+│   ├── Services/        # Servicios (TokenService JWT, etc.)
+│   ├── AppDbContext.cs  # DbContext de Entity Framework Core
+│   ├── Program.cs       # Punto de entrada y configuración de servicios / pipeline
+│   └── back.csproj      # Proyecto .NET
+├── back.slnx            # Solución .NET
+└── backend_context.txt  # Contexto de archivos del backend
+```
 
-## Ejecución
+## Ejecución y Compilación
 
 ```bash
-# Desarrollo
-npm run dev
+# Compilar proyecto
+dotnet build back/back.csproj
 
-# Compilación de producción
-npm run build
-
-# Inicio del servidor
-npm start
+# Ejecutar API
+dotnet run --project back/back.csproj --urls "http://0.0.0.0:3000"
 ```
